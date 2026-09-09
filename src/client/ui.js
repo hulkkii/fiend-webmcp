@@ -14,15 +14,15 @@ export async function copy(value) {
 }
 export function connectDialog(id, secret) {
   const endpoint = `${location.origin}${BASE}/mcp`;
+  const prompt = id ? `add ${endpoint} server and then use it to work on this scene\n\nscene_id: ${id}` : `add ${endpoint} server and then use it to build a treasure chest`;
   const dialog = document.createElement("dialog");
   dialog.className = "fiend-dialog";
   dialog.setAttribute("aria-labelledby", "connect-title");
-  dialog.innerHTML = `<h2 id="connect-title">Connect to Fiend</h2><p>Add this public remote MCP server to your agent. Scene writes require an edit secret.</p><code></code><p class="context"></p><p>Build, inspect, and address feedback with 28 tools. Changes appear live. Share the public scene link for read-only access.</p><div class="actions"><button class="fiend-button close">Close</button><button class="fiend-button copy">Copy MCP URL</button>${secret ? '<button class="fiend-button primary credentials">Copy agent access</button>' : ""}</div>`;
-  dialog.querySelector("code").textContent = endpoint;
-  dialog.querySelector(".context").textContent = id ? `Scene ID: ${id}. ${secret ? "Copy agent access to provide the ID and edit secret privately to your agent." : "This link is read-only. An edit link is required to change this scene."}` : "Start with create_scene. It returns a public ID, a private edit secret, and separate viewing and editing links.";
+  dialog.innerHTML = `<h2 id="connect-title">Connect agent</h2><p>works best in <a href="http://opencode.ai/v2">opencode2</a></p><code></code><p class="context"></p><div class="actions"><button class="fiend-button close">Close</button><button class="fiend-button primary copy">Copy prompt</button></div>`;
+  dialog.querySelector("code").textContent = prompt;
+  dialog.querySelector(".context").textContent = secret ? "Paste this into your agent. The copied prompt includes this scene’s edit access." : "Paste this prompt into your agent to get started.";
   dialog.querySelector(".close").onclick = () => dialog.close();
-  dialog.querySelector(".copy").onclick = () => copy(endpoint);
-  if (secret) dialog.querySelector(".credentials").onclick = () => copy(JSON.stringify({ scene_id: id, secret }));
+  dialog.querySelector(".copy").onclick = () => copy(secret ? `${prompt}\nsecret: ${secret}` : prompt);
   dialog.onclose = () => dialog.remove();
   document.body.append(dialog);
   dialog.showModal();

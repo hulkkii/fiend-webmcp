@@ -8,7 +8,7 @@ import { Resizer } from "./editor/js/Resizer.js";
 import { Animation } from "./editor/js/Animation.js";
 import { AnimationResizer } from "./editor/js/AnimationResizer.js";
 import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
-import { BASE, copy, toast } from "./ui.js";
+import { BASE, connectDialog, copy, toast } from "./ui.js";
 import { diffScene, mergeScene } from "./sync.js";
 import { createFeedback, captureFeedbackFrame, feedbackCamera } from "./feedback.js";
 
@@ -19,7 +19,7 @@ const writeHeaders = { "content-type": "application/json", authorization: `Beare
 document.body.classList.add("loading", "scene-editor");
 const actions = document.createElement("div");
 actions.className = "fiend-menubar-actions";
-actions.innerHTML = `<span id="fiend-status" role="status">Connecting</span><button class="fiend-button" id="fiend-share">Public link</button>`;
+actions.innerHTML = `<span id="fiend-status" role="status">Connecting</span><button class="fiend-button" id="fiend-share">Public link</button><button class="fiend-button" id="fiend-connect">Connect agent</button>`;
 const activity = document.createElement("div"); activity.id = "fiend-activity"; document.body.append(activity);
 const status = actions.querySelector("#fiend-status");
 const editor = new Editor();
@@ -257,6 +257,7 @@ async function history(action) {
 editor.undo = () => history("undo").catch((error) => toast(error.message));
 editor.redo = () => history("redo").catch((error) => toast(error.message));
 document.querySelector("#fiend-share").onclick = () => copy(`${location.origin}${BASE}/s/${id}`);
+document.querySelector("#fiend-connect").onclick = () => connectDialog(id, secret);
 document.addEventListener("dragover", (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
 document.addEventListener("drop", (event) => {
   event.preventDefault(); if (event.dataTransfer.types[0] === "text/plain") return;
