@@ -1,9 +1,11 @@
 import { cp, mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, relative } from "node:path";
 
-const root = "dist/labs/fiend";
+const workspace = process.cwd();
+const root = resolve(workspace, "dist");
+if (relative(workspace, root) !== "dist") throw new Error("Build output must be the workspace dist directory");
+await rm(root, { recursive: true, force: true });
 await mkdir(root, { recursive: true });
-await rm(join(root, "icon.svg"), { force: true });
 await Promise.all([
   cp("vendor/three/editor", join(root, "editor"), { recursive: true }),
   cp("vendor/three/examples/fonts", join(root, "examples/fonts"), { recursive: true }),
@@ -19,7 +21,7 @@ await cp("node_modules/three-mesh-bvh/LICENSE", join(root, "lib/bvh-LICENSE.txt"
 await cp("node_modules/three-gpu-pathtracer/build/index.module.js", join(root, "lib/pathtracer.js"));
 await cp("node_modules/three-mesh-bvh/build/index.module.js", join(root, "lib/bvh.js"));
 let html = await Bun.file("vendor/three/editor/index.html").text();
-html = html.replace("<title>three.js editor</title>", '<title>Fiend — scene editor</title><base href="/labs/fiend/editor/"><link rel="icon" href="data:,"><link rel="stylesheet" href="../fiend.css">');
+html = html.replace("<title>three.js editor</title>", '<title>Fiend scene editor</title><base href="./"><link rel="icon" href="data:,"><link rel="stylesheet" href="../fiend.css">');
 html = html.replace(/\s*<link rel="(?:apple-touch-icon|manifest|shortcut icon)"[^>]*>/g, "");
 html = html.replace("https://cdn.jsdelivr.net/npm/three-gpu-pathtracer@0.0.23/build/index.module.js", "../lib/pathtracer.js");
 html = html.replace("https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.4/build/index.module.js", "../lib/bvh.js");
@@ -27,8 +29,12 @@ html = html.replace("https://cdn.jsdelivr.net/gh/google/draco@1.5.7/javascript/d
 html = html.replace(/<script type="module">[\s\S]*?<\/script>/, '<script type="module" src="../scene.js"></script>');
 html = html.replace('<link rel="stylesheet" href="css/main.css">', '<link rel="stylesheet" href="css/main.css"><link rel="stylesheet" href="../editor.css"><link rel="stylesheet" href="../feedback.css">');
 await Bun.write(join(root, "editor/index.html"), html);
-const sync = await Bun.build({ entrypoints: ["src/sync.ts"], outdir: root, target: "browser", minify: false });
-if (!sync.success) throw new AggregateError(sync.logs, "Could not build scene synchronization");
+const core = await Bun.build({
+  entrypoints: ["src/core.ts"], outdir: root, target: "browser", external: ["three", "three/*"],
+});
+if (!core.success) throw new AggregateError(core.logs, "Could not build scene tools");
+const local = await Bun.build({ entrypoints: ["src/local.ts"], outdir: root, target: "browser", external: ["three", "three/*"] });
+if (!local.success) throw new AggregateError(local.logs, "Could not build local storage");
 // These two upstream paths assume the editor is mounted at the site root.
 for (const file of ["js/Loader.js", "js/libs/ui.three.js"]) {
   const path = join(root, "editor", file);

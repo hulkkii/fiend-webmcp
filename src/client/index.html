@@ -3,37 +3,38 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>build 3d stuff with your agent</title>
-    <meta name="description" content="build 3d stuff with your agent" />
+    <title>Fiend · Your scenes</title>
+    <meta name="description" content="Build 3D scenes in your browser, by hand or with an agent." />
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/labs/fiend/fiend.css" />
-    <link rel="stylesheet" href="/labs/fiend/landing.css" />
-    <script type="importmap">{"imports":{"three":"/labs/fiend/build/three.module.js","three/addons/":"/labs/fiend/examples/jsm/"}}</script>
+    <link rel="stylesheet" href="./fiend.css" />
+    <link rel="stylesheet" href="./landing.css" />
+    <script type="importmap">{"imports":{"three":"./build/three.module.js","three/addons/":"./examples/jsm/"}}</script>
   </head>
   <body class="landing">
     <main>
       <section class="introduction" aria-labelledby="page-title">
         <h1 id="page-title">build 3d stuff with your agent</h1>
       </section>
-
       <div id="mascot" class="mascot" role="img" aria-label="A rotating, twisted demon mask made with Fiend"></div>
-
-      <section class="connection" aria-labelledby="mcp-title">
+      <section class="library" aria-labelledby="library-title">
         <div class="section-heading">
-          <h2 id="mcp-title">prompt</h2>
-          <span
-            >works best in <a href="http://opencode.ai/v2">opencode2</a></span
-          >
+          <h2 id="library-title">Your scenes</h2>
+          <div class="library-actions">
+            <button class="fiend-button" id="import-scene">Import JSON</button>
+            <button class="fiend-button primary" id="new-scene">New scene</button>
+          </div>
         </div>
-        <div class="endpoint">
-          <code id="endpoint"
-            >add https://anoma.ly/labs/fiend/mcp server and then use it to build
-            a treasure chest</code
-          ><button class="fiend-button" id="copy-endpoint">copy</button>
-        </div>
+        <input type="file" id="import-file" accept=".json,application/json" hidden />
+        <p class="storage-note">Saved in this browser. Export backups from the editor to keep a copy.</p>
+        <div id="scene-list" aria-live="polite">Loading scenes…</div>
+      </section>
+      <section class="connection" aria-labelledby="agent-title">
+        <h2 id="agent-title">Work with an agent</h2>
+        <p>Open a scene in an AI browser, then ask your agent to build or edit it. Fiend exposes its modeling tools through WebMCP while the editor is open.</p>
+        <button class="fiend-button" id="connect-agent">Browser tools</button>
       </section>
     </main>
-    <script type="module" src="/labs/fiend/landing.js"></script>
-    <script type="module" src="/labs/fiend/mascot.js"></script>
+    <script type="module" src="./landing.js"></script>
+    <script type="module" src="./mascot.js"></script>
   </body>
 </html>

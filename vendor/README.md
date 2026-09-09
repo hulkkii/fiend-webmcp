@@ -12,6 +12,6 @@ https://cdn.jsdelivr.net/gh/google/draco@1.5.7/javascript/draco_encoder.js
 
 Draco is Apache-2.0 licensed; see `draco-LICENSE`.
 
-The upstream editor source is preserved. `scripts/build.ts` replaces its HTML bootstrap with Fiend's integration and adjusts two root-relative example asset paths in the build output. Fiend owns cloud persistence and hides the upstream local-autosave control and executable-script tab.
+The editor is vendored from the revision above. Fiend removes its upstream history settings panel because local document history owns undo and redo. `scripts/build.ts` replaces its HTML bootstrap with Fiend's integration and adjusts two root-relative example asset paths in the build output. Fiend owns IndexedDB persistence and hides the upstream local-autosave control and executable-script tab.
 
-The editor's path tracer and BVH dependency are pinned to the versions in the upstream import map (`three-gpu-pathtracer@0.0.23`, `three-mesh-bvh@0.7.4`). Their MIT licenses, and the Three.js license, are included in deployed assets under `/labs/fiend/lib/`.
+The editor's path tracer and BVH dependency are pinned to the versions in the upstream import map (`three-gpu-pathtracer@0.0.23`, `three-mesh-bvh@0.7.4`). Their MIT licenses, and the Three.js license, are included in deployed assets under `lib/`.

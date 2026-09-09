@@ -158,3 +158,12 @@ body.loading::after { content: "Loading scene…"; position: absolute; left: 30%
   .read-only #menubar .fiend-button { padding: 3px 5px; font-size: 10px; }
   .viewer-tree { max-height: 150px; }
 }
+
+.fiend-capture { width: min(1000px, 95vw); max-width: 95vw; }
+.fiend-capture img { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; margin-bottom: 12px; }
+.fiend-menubar-actions { gap: 6px; }
+@media (max-width: 1100px) { body.scene-editor { --content-top: 72px; } .scene-editor #menubar { height: 72px; flex-wrap: wrap; } .scene-editor .fiend-menubar-actions { width: 100%; height: 36px; justify-content: flex-end; } }
+
+.fiend-scenes-link { flex-shrink: 0; padding: 8px 12px; border-right: 1px solid var(--line); color: var(--bright); text-decoration: none; white-space: nowrap; font-size: 12px; }
+.fiend-scenes-link:hover { background: var(--hover); text-decoration: underline; }
+.fiend-scenes-link:focus-visible { outline: 2px solid var(--bright); outline-offset: -3px; }

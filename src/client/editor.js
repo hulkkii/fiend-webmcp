@@ -8,209 +8,240 @@ import { Resizer } from "./editor/js/Resizer.js";
 import { Animation } from "./editor/js/Animation.js";
 import { AnimationResizer } from "./editor/js/AnimationResizer.js";
 import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
-import { BASE, connectDialog, copy, toast } from "./ui.js";
-import { diffScene, mergeScene } from "./sync.js";
+import { BASE, connectDialog, toast } from "./ui.js";
+import { local } from "./local.js";
+import { editDocument, editInput, validateDocument } from "./core.js";
 import { createFeedback, captureFeedbackFrame, feedbackCamera } from "./feedback.js";
+import { exportGLB } from "./export.js";
+import { renderSnapshot } from "./capture.js";
+import { registerTools } from "./webmcp.js";
 
-const id = location.pathname.split("/").filter(Boolean).at(-1);
-const api = `${BASE}/api/scenes/${id}`;
-const secret = new URLSearchParams(location.hash.slice(1)).get("secret");
-const writeHeaders = { "content-type": "application/json", authorization: `Bearer ${secret}` };
+THREE.ObjectLoader.registerGeometry("TextGeometry", TextGeometry);
 document.body.classList.add("loading", "scene-editor");
-const actions = document.createElement("div");
-actions.className = "fiend-menubar-actions";
-actions.innerHTML = `<span id="fiend-status" role="status">Connecting</span><button class="fiend-button" id="fiend-share">Public link</button><button class="fiend-button" id="fiend-connect">Connect agent</button>`;
-const activity = document.createElement("div"); activity.id = "fiend-activity"; document.body.append(activity);
-const status = actions.querySelector("#fiend-status");
 const editor = new Editor();
 window.editor = editor;
 window.THREE = THREE;
-THREE.ObjectLoader.registerGeometry("TextGeometry", TextGeometry);
-// The Durable Object is the persistence authority. Avoid cross-scene local storage.
-editor.config.setKey("autosave", false, "project/renderer/type", "WebGLRenderer");
-let renderer;
+editor.config.setKey("autosave", false, "settings/history", false, "project/renderer/type", "WebGLRenderer");
+let renderer, snapshot, dirty = false, applying = false, locked = false, timer, dragging = false;
+let queue = Promise.resolve();
 editor.signals.rendererCreated.add((value) => { renderer = value; });
 const viewport = new Viewport(editor);
 const toolbar = new Toolbar(editor);
 const menubar = new Menubar(editor);
+// The local file actions replace upstream project/script imports and publishing.
+menubar.dom.querySelector(".menu")?.remove();
 menubar.dom.querySelector(".menu.right")?.remove();
+const actions = document.createElement("div");
+actions.className = "fiend-menubar-actions";
+actions.innerHTML = `<span id="fiend-status" role="status">Opening</span><button class="fiend-button" id="fiend-save">Save</button><button class="fiend-button" id="fiend-backup">Backup JSON</button><button class="fiend-button" id="fiend-export">Export GLB</button><button class="fiend-button" id="fiend-connect">Agent tools</button>`;
+const scenesLink = document.createElement("a");
+scenesLink.id = "fiend-library";
+scenesLink.className = "fiend-scenes-link";
+scenesLink.href = BASE;
+scenesLink.textContent = "\u2190 All scenes";
+menubar.dom.prepend(scenesLink);
 menubar.dom.append(actions);
 for (const panel of [viewport, toolbar, new Sidebar(editor), menubar, new Resizer(editor), new Animation(editor), new AnimationResizer(editor)]) document.body.append(panel.dom);
-editor.signals.animationPanelChanged.add((height) => {
-  const visible = height !== false;
-  viewport.dom.classList.toggle("with-animation", visible);
-  toolbar.dom.classList.toggle("with-animation", visible);
-  viewport.dom.style.bottom = visible ? `${height}px` : "";
-  toolbar.dom.style.bottom = visible ? `${height + 20}px` : "";
-  editor.signals.windowResize.dispatch();
-});
-
-let applying = false, pending = [], inFlight;
-let timer, socket, received = Promise.resolve(), reconnectDelay = 500;
-let shared, viewDocument;
-function state(message, error = false) { status.textContent = message; status.dataset.state = error ? "error" : "ok"; }
-function updateStatus() {
-  if (socket?.readyState !== WebSocket.OPEN) state("Reconnecting…", true);
-  else state(pending.length || inFlight ? "Syncing…" : "Live");
+const status = actions.querySelector("#fiend-status");
+const activity = document.createElement("div"); activity.id = "fiend-activity"; document.body.append(activity);
+const sidebar = document.querySelector("#sidebar");
+const transforms = editor.sceneHelpers.children.find((node) => node.isTransformControlsRoot)?.controls;
+let feedback;
+function state(text, error = false) { status.textContent = text; status.dataset.state = error ? "error" : "ok"; }
+function lock(value) {
+  locked = value;
+  viewport.dom.style.pointerEvents = value ? "none" : "";
+  sidebar.inert = value || !!feedback?.active;
+  menubar.dom.inert = value;
+  toolbar.dom.inert = value;
+}
+function run(task) {
+  const next = queue.then(async () => {
+    if (dragging) throw new Error("Finish the current drag before using this action.");
+    // Commit the focused property field before disabling the editor.
+    if (document.activeElement?.matches("input,textarea")) document.activeElement.blur();
+    lock(true);
+    try { return await task(); }
+    catch (error) { state(dirty ? "Unsaved changes" : "Action failed", true); throw error; }
+    finally { lock(false); }
+  });
+  queue = next.catch(() => {});
+  return next;
 }
 function serialize() {
   editor.scene.updateMatrixWorld(true);
-  return { ...shared?.document, scene:editor.scene.toJSON(), backgroundType:editor.backgroundType, environmentType:editor.environmentType };
+  return { ...snapshot.document, scene: editor.scene.toJSON(), backgroundType: editor.backgroundType, environmentType: editor.environmentType };
 }
-async function apply(snapshot) {
-  captureLocal();
-  const acknowledged = inFlight?.id === snapshot.source;
-  if (acknowledged) inFlight = undefined;
-  if (shared && snapshot.revision <= shared.revision && !acknowledged && viewDocument) return;
-  const previous = shared;
-  if (!shared || snapshot.revision > shared.revision) shared = snapshot;
-  const optimistic = [...(inFlight?.patches ?? []), ...pending];
-  const display = optimistic.length ? mergeScene(shared.document, optimistic) : shared.document;
-  const cameraChanged = !previous || JSON.stringify(shared.document.camera) !== JSON.stringify(previous.document.camera) || JSON.stringify(shared.document.controls) !== JSON.stringify(previous.document.controls);
-  if (viewDocument && !cameraChanged && diffScene(viewDocument, display).length === 0) {
-    updateStatus();
-    if (pending.length && !inFlight) scheduleSave();
-    return;
-  }
-  applying = true;
-  viewport.dom.style.pointerEvents = "none";
-  document.querySelector("#sidebar").inert = true;
+function historyStatus() {
+  editor.history.undos = Array.from({ length: snapshot.undoCount ?? 0 }, () => ({}));
+  editor.history.redos = Array.from({ length: snapshot.redoCount ?? 0 }, () => ({}));
+  editor.signals.historyChanged.dispatch();
+}
+function accepted(value) {
+  snapshot = value;
+  document.title = `${snapshot.name} - Fiend`;
+  activity.textContent = `${snapshot.name} · revision ${snapshot.revision} · saved in this browser`;
+  historyStatus();
+  state("Saved locally");
+}
+function disposeScene(scene) {
+  const resources = new Set();
+  scene.traverse((node) => {
+    if (node.geometry) resources.add(node.geometry);
+    for (const material of Array.isArray(node.material) ? node.material : node.material ? [node.material] : []) {
+      resources.add(material);
+      for (const value of Object.values(material)) if (value?.isTexture) resources.add(value);
+    }
+  });
+  for (const resource of resources) resource.dispose();
+}
+async function parseDocument(value) {
+  const document = validateDocument(value);
+  const scene = await new THREE.ObjectLoader().parseAsync(document.scene);
+  try { return { scene, camera: await new THREE.ObjectLoader().parseAsync(document.camera) }; }
+  catch (error) { disposeScene(scene); throw error; }
+}
+async function apply(value, parsed) {
+  const loaded = parsed ?? await parseDocument(value.document);
+  const cameraChanged = !snapshot || snapshot.id !== value.id || JSON.stringify(snapshot.document.camera) !== JSON.stringify(value.document.camera) || JSON.stringify(snapshot.document.controls) !== JSON.stringify(value.document.controls);
   const selected = editor.selected?.uuid;
+  applying = true;
   try {
-    // Parse first so a broken imported scene cannot erase the current viewport.
-    const scene = await new THREE.ObjectLoader().parseAsync(display.scene);
-    const camera = cameraChanged ? await new THREE.ObjectLoader().parseAsync(shared.document.camera) : null;
+    disposeScene(editor.scene);
     editor.signals.sceneGraphChanged.active = false;
-    const geometries = new Set(), materials = new Set(), textures = new Set();
-    editor.scene.traverse((node) => {
-      if (node.geometry) geometries.add(node.geometry);
-      for (const material of Array.isArray(node.material) ? node.material : node.material ? [node.material] : []) {
-        materials.add(material);
-        for (const value of Object.values(material)) if (value?.isTexture) textures.add(value);
-      }
-    });
     while (editor.scene.children.length) editor.removeObject(editor.scene.children[0]);
-    for (const resource of [...geometries, ...materials, ...textures]) resource.dispose();
     editor.signals.sceneGraphChanged.active = true;
-    editor.history.clear();
-    editor.backgroundType = display.backgroundType;
-    editor.environmentType = display.environmentType;
-    editor.setScene(scene);
-    editor.scene.position.copy(scene.position);
-    editor.scene.quaternion.copy(scene.quaternion);
-    editor.scene.scale.copy(scene.scale);
-    if (camera) {
-      editor.setCameraType(camera.isOrthographicCamera ? "orthographic" : "perspective");
-      editor.camera.copy(camera);
+    editor.backgroundType = value.document.backgroundType;
+    editor.environmentType = value.document.environmentType;
+    editor.setScene(loaded.scene);
+    editor.scene.position.copy(loaded.scene.position);
+    editor.scene.quaternion.copy(loaded.scene.quaternion);
+    editor.scene.scale.copy(loaded.scene.scale);
+    if (cameraChanged) {
+      editor.setCameraType(loaded.camera.isOrthographicCamera ? "orthographic" : "perspective");
+      editor.camera.copy(loaded.camera);
       editor.camera.name = "Editor camera";
-      if (shared.document.controls) editor.controls.fromJSON(shared.document.controls);
+      editor.setViewportCamera(editor.camera.uuid);
+      if (value.document.controls) editor.controls.fromJSON(value.document.controls);
       editor.signals.cameraResetted.dispatch();
     }
     if (selected && editor.scene.getObjectByProperty("uuid", selected)) editor.selectByUuid(selected);
     else editor.deselect();
-    viewDocument = serialize();
-    document.title = `${shared.name} — Fiend`;
-    activity.textContent = `scene ${id.slice(0,8)} / ${shared.source === "agent" ? "last edit from agent" : "shared workspace"}`;
+    dirty = false;
+    accepted(value);
     editor.signals.windowResize.dispatch();
-    updateStatus();
-    window.fiendReady = true;
-    document.body.classList.remove("loading");
-  } finally {
-    applying = false;
-    viewport.dom.style.pointerEvents = "";
-    document.querySelector("#sidebar").inert = feedback.active;
-    if (pending.length && !inFlight) scheduleSave();
-  }
+    editor.signals.cameraChanged.dispatch();
+  } finally { applying = false; editor.signals.sceneGraphChanged.active = true; }
 }
-
-function scheduleSave(delay = 200) {
+async function flushNow() {
   clearTimeout(timer);
-  timer = setTimeout(save, delay);
+  if (!dirty || !snapshot) return snapshot;
+  state("Saving");
+  const result = await local.commit(snapshot.id, snapshot.revision, serialize(), "browser");
+  dirty = false;
+  accepted(result);
+  return result;
 }
-function captureLocal() {
-  if (applying || !viewDocument) return;
-  const current = serialize();
-  const patches = diffScene(viewDocument, current);
-  if (!patches.length) return;
-  pending.push(...patches);
-  viewDocument = current;
-  updateStatus();
-  scheduleSave();
+function changed() {
+  if (applying || !snapshot) return;
+  dirty = true;
+  state("Unsaved changes");
+  clearTimeout(timer);
+  if (!dragging) timer = setTimeout(() => run(flushNow).catch((error) => toast(error.message)), 250);
 }
-function receive(snapshot) {
-  received = received.then(() => apply(snapshot)).catch((error) => { state("Could not sync scene", true); toast(error.message); console.error(error); });
-  return received;
-}
-function save() {
-  captureLocal();
-  if (inFlight) return inFlight.request;
-  if (!pending.length || applying) return Promise.resolve();
-  const transaction = { id:crypto.randomUUID(), patches:pending.splice(0) };
-  inFlight = transaction;
-  updateStatus();
-  transaction.request = (async () => {
-    let retry = false;
-    try {
-      const response = await fetch(`${api}/save`, { method:"POST", headers:writeHeaders, body:JSON.stringify({ patches:transaction.patches, client:transaction.id }) });
-      const result = await response.json();
-      if (!response.ok) {
-        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-          if (inFlight?.id === transaction.id) inFlight = undefined;
-          toast(result.error);
-          const latest = await fetch(api).then((response) => response.json());
-          // Reconcile the rejected local operation against the accepted scene.
-          viewDocument = undefined;
-          await receive({ ...latest, source:transaction.id });
-          return;
-        }
-        throw new Error(result.error);
-      }
-      await receive(result);
-    } catch (error) {
-      if (inFlight?.id === transaction.id) {
-        pending.unshift(...transaction.patches);
-        inFlight = undefined;
-        state("Reconnecting…", true);
-        retry = true;
-      }
-      console.error(error);
-    } finally {
-      if (pending.length && !inFlight) scheduleSave(retry ? 1500 : 200);
-    }
-  })();
-  return transaction.request;
-}
-function changed() { if (!applying) queueMicrotask(captureLocal); }
-for (const name of ["objectAdded", "objectChanged", "objectRemoved", "geometryChanged", "materialChanged", "sceneBackgroundChanged", "sceneEnvironmentChanged", "sceneFogChanged", "sceneGraphChanged", "historyChanged"]) editor.signals[name].add(changed);
-// Orbit, zoom, pan, camera selection and resize are local observations.
+// Commands execute immediately; durable document history owns undo/redo.
+editor.execute = (command) => {
+  if (locked || applying) return;
+  command.execute();
+  changed();
+};
+for (const name of ["objectAdded", "objectChanged", "objectRemoved", "geometryChanged", "materialChanged", "sceneBackgroundChanged", "sceneEnvironmentChanged", "sceneFogChanged", "sceneGraphChanged"]) editor.signals[name].add(changed);
+transforms?.addEventListener("mouseDown", () => { dragging = true; clearTimeout(timer); });
+transforms?.addEventListener("mouseUp", () => { dragging = false; if (dirty) changed(); });
 
-const transforms = editor.sceneHelpers.children.find((node) => node.isTransformControlsRoot)?.controls;
-const feedback = createFeedback({
-  api, secret, viewport: viewport.dom, buttonHost: actions,
+async function edit(input) {
+  return run(async () => {
+    await flushNow();
+    const parsedInput = editInput.parse(input);
+    if (parsedInput.revision !== undefined && parsedInput.revision !== snapshot.revision) throw new Error("Scene revision changed. Inspect the scene and retry.");
+    const result = editDocument(snapshot.document, parsedInput.operations);
+    const parsed = await parseDocument(result.document);
+    let saved;
+    try { saved = await local.commit(snapshot.id, snapshot.revision, result.document, "agent"); }
+    catch (error) { disposeScene(parsed.scene); throw error; }
+    await apply(saved, parsed);
+    return { ...saved, created: result.created };
+  });
+}
+async function history(action, revision) {
+  return run(async () => {
+    await flushNow();
+    const saved = await local[action](snapshot.id, revision ?? snapshot.revision);
+    await apply(saved);
+    return saved;
+  });
+}
+editor.undo = () => history("undo").catch((error) => toast(error.message));
+editor.redo = () => history("redo").catch((error) => toast(error.message));
+
+function download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const dialog = document.createElement("dialog"); dialog.className = "fiend-dialog";
+  const title = document.createElement("h2"); title.textContent = "File ready";
+  const link = document.createElement("a"); link.className = "fiend-button"; link.href = url; link.download = filename; link.textContent = `Download ${filename}`;
+  const close = document.createElement("button"); close.className = "fiend-button"; close.textContent = "Close"; close.onclick = () => dialog.close();
+  dialog.append(title, link, close); document.body.append(dialog); dialog.showModal();
+  dialog.onclose = () => { URL.revokeObjectURL(url); dialog.remove(); };
+  return { filename, bytes: blob.size, revision: snapshot.revision, url, download: "Use the visible download link. This file URL lasts until the dialog closes." };
+}
+function filename(extension) { return `${snapshot.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "scene"}.${extension}`; }
+async function exportScene() {
+  // Backup must remain available when browser storage is full.
+  const value = { ...snapshot, document: serialize() };
+  return { ...download(new Blob([JSON.stringify({ format: "fiend-local", version: 1, snapshot: value })], { type: "application/json" }), filename("json")), format: "json", unsaved: dirty };
+}
+async function exportAsset(object = "Scene") {
+  return run(async () => {
+    await flushNow();
+    const bytes = await exportGLB(editor.scene, object);
+    return { ...download(new Blob([bytes], { type: "model/gltf-binary" }), filename("glb")), format: "glb" };
+  });
+}
+async function capture(input) {
+  return run(async () => {
+    await flushNow();
+    const result = await renderSnapshot(snapshot, input);
+    document.querySelector("#fiend-capture-preview")?.remove();
+    const dialog = document.createElement("dialog"); dialog.id = "fiend-capture-preview"; dialog.className = "fiend-dialog fiend-capture";
+    const image = new Image(); image.src = result.image; image.alt = `Scene capture at revision ${snapshot.revision}`;
+    const close = document.createElement("button"); close.className = "fiend-button"; close.textContent = "Close capture"; close.onclick = () => dialog.close();
+    dialog.append(image, close); document.body.append(dialog); dialog.onclose = () => dialog.remove(); dialog.showModal();
+    return { ...result, preview: "#fiend-capture-preview" };
+  });
+}
+feedback = createFeedback({
+  store: {
+    list: (options) => local.feedbackList(snapshot.id, options),
+    add: (input) => local.feedbackAdd(snapshot.id, input),
+    resolve: (ids) => local.feedbackResolve(snapshot.id, ids),
+  },
+  viewport: viewport.dom, buttonHost: actions,
   setActive(active) {
-    document.querySelector("#sidebar").inert = active;
+    sidebar.inert = active || locked;
     for (const menu of menubar.dom.querySelectorAll(".menu")) menu.inert = active;
     if (transforms) { transforms.enabled = !active; if (active) transforms.detach(); }
     if (!active) editor.signals.objectSelected.dispatch(editor.selected);
   },
   async capture() {
-    await save(); await received;
-    while (applying) await received;
-    if (!shared || pending.length || inFlight) throw new Error("Wait for the scene to finish syncing before capturing feedback");
+    await run(flushNow);
     return new Promise((resolve, reject) => {
       const realistic = editor.viewportShading === "realistic";
       const signal = realistic ? editor.signals.pathTracerUpdated : editor.signals.sceneRendered;
-      const timeout = setTimeout(() => { signal.remove(captured); reject(new Error("Could not capture the current render. Try another rendering mode.")); }, 5000);
+      const timeout = setTimeout(() => { signal.remove(captured); reject(new Error("Could not capture this rendering mode.")); }, 5000);
       function captured() {
-        if (applying) return;
         signal.remove(captured); clearTimeout(timeout);
-        try {
-          resolve(captureFeedbackFrame({
-            canvas: renderer.domElement, scene: editor.scene, camera: editor.viewportCamera,
-            target: editor.controls.toJSON().center, shading: editor.viewportShading,
-            revision: shared.revision, selected: editor.selector.selection.map((object) => object.uuid),
-          }));
-        } catch (error) { reject(error); }
+        try { resolve(captureFeedbackFrame({ canvas: renderer.domElement, scene: editor.scene, camera: editor.viewportCamera, target: editor.controls.toJSON().center, shading: editor.viewportShading === "default" ? "solid" : editor.viewportShading, revision: snapshot.revision, selected: editor.selector.selection.map((object) => object.uuid) })); }
+        catch (error) { reject(error); }
       }
       signal.add(captured);
       if (!realistic) editor.signals.cameraChanged.dispatch();
@@ -219,50 +250,61 @@ const feedback = createFeedback({
   async restore(view) {
     const camera = feedbackCamera(view);
     editor.setCameraType(camera.isOrthographicCamera ? "orthographic" : "perspective");
-    editor.camera.copy(camera);
-    editor.setViewportCamera(editor.camera.uuid);
+    editor.camera.copy(camera); editor.setViewportCamera(editor.camera.uuid);
     editor.controls.fromJSON({ center: view.target });
-    editor.setViewportShading(view.shading);
-    editor.signals.cameraResetted.dispatch();
-    editor.signals.cameraChanged.dispatch();
+    editor.setViewportShading(view.shading === "solid" ? "default" : view.shading);
+    editor.signals.cameraResetted.dispatch(); editor.signals.cameraChanged.dispatch();
   },
 });
 editor.signals.objectSelected.add(() => { if (feedback.active) transforms?.detach(); });
-
-function connect() {
-  const url = new URL(`${api}/live`, location.origin); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  socket = new WebSocket(url);
-  socket.onopen = () => { reconnectDelay = 500; updateStatus(); };
-  socket.onmessage = (event) => {
-    if (event.data === "pong") return;
-    const snapshot = JSON.parse(event.data);
-    if (snapshot.type === "feedback") { feedback.receive(snapshot); return; }
-    if (snapshot.type !== "snapshot") return;
-    receive(snapshot);
-  };
-  socket.onclose = () => { state("Reconnecting…", true); setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(15000, reconnectDelay * 2); };
-  socket.onerror = () => socket.close();
-}
-setInterval(() => { if (socket?.readyState === WebSocket.OPEN) socket.send("ping"); }, 25000);
-connect();
-
-async function history(action) {
-  await save();
-  if (pending.length || inFlight) return;
-  const response = await fetch(`${api}/${action}`, { method:"POST", headers:writeHeaders, body:"{}" });
-  const result = await response.json();
-  if (!response.ok) return toast(result.error);
-  await receive(result);
-}
-editor.undo = () => history("undo").catch((error) => toast(error.message));
-editor.redo = () => history("redo").catch((error) => toast(error.message));
-document.querySelector("#fiend-share").onclick = () => copy(`${location.origin}${BASE}/s/${id}`);
-document.querySelector("#fiend-connect").onclick = () => connectDialog(id, secret);
-document.addEventListener("dragover", (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
-document.addEventListener("drop", (event) => {
-  event.preventDefault(); if (event.dataTransfer.types[0] === "text/plain") return;
-  if (event.dataTransfer.items) editor.loader.loadItemList(event.dataTransfer.items); else editor.loader.loadFiles(event.dataTransfer.files);
+const context = {
+  getSnapshot: () => snapshot,
+  flush: () => run(flushNow), edit, history, exportScene, exportAsset, capture,
+  create: (input) => run(async () => {
+    if (feedback.hasDraft) throw new Error("Finish the feedback draft before switching scenes.");
+    await flushNow();
+    const result = await local.create(input);
+    await apply(result);
+    window.history.replaceState(null, "", `#scene=${result.id}`);
+    feedback.reset();
+    return result;
+  }),
+  feedbackList: (input) => local.feedbackList(snapshot.id, input),
+  feedbackResolve: async (ids) => { const result = await local.feedbackResolve(snapshot.id, ids); feedback.receive(result); return result; },
+};
+window.fiend = context;
+scenesLink.onclick = (event) => {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  run(flushNow).then(() => { location.href = scenesLink.href; }).catch((error) => toast(error.message));
+};
+actions.querySelector("#fiend-save").onclick = () => run(flushNow).catch((error) => toast(error.message));
+actions.querySelector("#fiend-backup").onclick = () => exportScene().catch((error) => toast(error.message));
+actions.querySelector("#fiend-export").onclick = () => exportAsset(editor.selected?.uuid ?? "Scene").catch((error) => toast(error.message));
+actions.querySelector("#fiend-connect").onclick = () => connectDialog();
+editor.signals.animationPanelChanged.add((height) => {
+  const visible = height !== false;
+  viewport.dom.classList.toggle("with-animation", visible); toolbar.dom.classList.toggle("with-animation", visible);
+  viewport.dom.style.bottom = visible ? `${height}px` : ""; toolbar.dom.style.bottom = visible ? `${height + 20}px` : "";
+  editor.signals.windowResize.dispatch();
 });
+document.addEventListener("keydown", (event) => {
+  if (locked || event.target.closest?.("dialog")) event.stopImmediatePropagation();
+}, true);
 window.addEventListener("resize", () => editor.signals.windowResize.dispatch());
-window.addEventListener("beforeunload", (event) => { if (pending.length || inFlight || feedback.hasDraft) { event.preventDefault(); event.returnValue = ""; } });
-editor.signals.windowResize.dispatch();
+window.addEventListener("beforeunload", (event) => { if (dirty || locked || feedback.hasDraft) { event.preventDefault(); event.returnValue = ""; } });
+window.addEventListener("hashchange", () => { if (!dirty && !locked && !feedback.hasDraft) location.reload(); else toast("Save changes before switching scenes."); });
+try {
+  const id = new URLSearchParams(location.hash.slice(1)).get("scene");
+  const initial = id ? await local.load(id) : await local.create({ template: "empty" });
+  await apply(initial);
+  window.history.replaceState(null, "", `#scene=${initial.id}`);
+  await feedback.refresh();
+  const registration = await registerTools(context);
+  window.fiendTools = registration;
+  if (registration.error) toast(`Agent tools could not register: ${registration.error}`);
+  actions.querySelector("#fiend-connect").dataset.available = String(!!document.modelContext?.registerTool);
+  window.fiendReady = true;
+} catch (error) {
+  state("Could not open scene", true); toast(error.message); console.error(error);
+} finally { document.body.classList.remove("loading"); }

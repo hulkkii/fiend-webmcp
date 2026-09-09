@@ -114,27 +114,27 @@ function paint(context, width, height, image, strokes = [], targets = []) {
   });
 }
 
-export function createFeedback({ api, secret, viewport, buttonHost, capture, restore, setActive = () => {} }) {
+export function createFeedback({ store, viewport, buttonHost, capture, restore, setActive = () => {} }) {
+  const editable = true;
   const toggle = document.createElement("button");
   toggle.className = "fiend-button fiend-feedback-toggle";
   toggle.textContent = "Feedback"; toggle.setAttribute("aria-pressed", "false");
   buttonHost.prepend(toggle);
   const panel = document.createElement("section");
   panel.id = "feedback-panel"; panel.hidden = true;
-  panel.innerHTML = `<div class="feedback-heading"><h2>Feedback</h2><button class="fiend-button feedback-close" aria-label="Close feedback">Close</button></div>${secret ? '<form class="feedback-form"><div class="feedback-compose-actions"><button type="button" class="fiend-button feedback-capture">Capture view</button><button type="button" class="fiend-button feedback-live">Live view</button></div><p class="feedback-context">Capture a view to select objects or draw on it.</p><label for="feedback-text">Note for your agent</label><textarea id="feedback-text" rows="3" maxlength="4000" placeholder="What would you like changed?" required></textarea><button class="fiend-button primary feedback-submit" type="submit">Leave note</button></form>' : '<p class="feedback-readonly">Notes from collaborators. An edit link is required to leave feedback.</p>'}<div class="feedback-notes"></div><button class="fiend-button feedback-more" hidden>Load more</button>`;
+  panel.innerHTML = `<div class="feedback-heading"><h2>Feedback</h2><button class="fiend-button feedback-close" aria-label="Close feedback">Close</button></div>${editable ? '<form class="feedback-form"><div class="feedback-compose-actions"><button type="button" class="fiend-button feedback-capture">Capture view</button><button type="button" class="fiend-button feedback-live">Live view</button></div><p class="feedback-context">Capture a view to select objects or draw on it.</p><label for="feedback-text">Note for your agent</label><textarea id="feedback-text" rows="3" maxlength="4000" placeholder="What would you like changed?" required></textarea><button class="fiend-button primary feedback-submit" type="submit">Leave note</button></form>' : '<p class="feedback-readonly">Notes from collaborators. An edit link is required to leave feedback.</p>'}<div class="feedback-notes"></div><button class="fiend-button feedback-more" hidden>Load more</button>`;
   document.body.append(panel);
   const surface = document.createElement("div");
   surface.className = "feedback-surface"; surface.hidden = true;
   const canvas = document.createElement("canvas");
   const tools = document.createElement("div"); tools.className = "feedback-tools";
-  tools.innerHTML = `${secret ? '<select aria-label="Feedback tool" class="Select"><option value="select">Select objects</option><option value="pen">Draw</option><option value="arrow">Arrow</option><option value="box">Box</option><option value="circle">Circle</option></select><button class="fiend-button feedback-undo" type="button">Undo mark</button>' : ''}<span class="feedback-view-label"></span><button class="fiend-button feedback-resume" type="button">Live view</button>`;
+  tools.innerHTML = `${editable ? '<select aria-label="Feedback tool" class="Select"><option value="select">Select objects</option><option value="pen">Draw</option><option value="arrow">Arrow</option><option value="box">Box</option><option value="circle">Circle</option></select><button class="fiend-button feedback-undo" type="button">Undo mark</button>' : ''}<span class="feedback-view-label"></span><button class="fiend-button feedback-resume" type="button">Live view</button>`;
   surface.append(canvas, tools); viewport.append(surface);
   const form = panel.querySelector("form"), text = panel.querySelector("textarea"), submit = panel.querySelector(".feedback-submit");
   const mode = tools.querySelector("select"), undo = tools.querySelector(".feedback-undo");
   let opened = false, draft, preview, showingDraft = false, stroke, busy = false;
   let notes = [], version = -1, pendingCount = 0, nextAfter = 0, requestEpoch = 0, previewEpoch = 0;
   const context = canvas.getContext("2d");
-  const writes = { "content-type": "application/json", authorization: `Bearer ${secret}` };
 
   function count(value) {
     pendingCount = value;
@@ -157,7 +157,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
     paint(context, rect.width, rect.height, frame.image, showingDraft ? draft.strokes : [], showingDraft ? draft.targets : []);
   }
   function updateComposer() {
-    if (!secret) return;
+    if (!editable) return;
     submit.disabled = busy || !draft || !text.value.trim();
     panel.querySelector(".feedback-capture").disabled = busy;
     panel.querySelector(".feedback-context").textContent = draft
@@ -176,7 +176,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
     updateComposer(); layout();
   }
   async function beginDraft() {
-    if (!secret || busy) return;
+    if (!editable || busy) return;
     busy = true; updateComposer();
     try {
       live();
@@ -204,9 +204,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
   }
   async function resolve(id) {
     try {
-      const response = await fetch(`${api}/feedback/resolve`, { method: "POST", headers: writes, body: JSON.stringify({ feedback_ids: [id] }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
+      const result = await store.resolve([id]);
       receive(result);
     } catch (error) { toast(error.message); }
   }
@@ -222,7 +220,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
       meta.textContent = `r${note.scene_revision} · ${note.targets.length ? note.targets.map((target) => target.name).join(", ") : "General note"}`;
       const actions = document.createElement("div"); actions.className = "feedback-note-actions";
       const view = document.createElement("button"); view.className = "fiend-button"; view.textContent = "View"; view.onclick = () => showNote(note); actions.append(view);
-      if (secret) {
+      if (editable) {
         const done = document.createElement("button"); done.className = "fiend-button"; done.textContent = "Resolve"; done.onclick = () => resolve(note.id); actions.append(done);
       }
       article.append(body, meta, actions); container.append(article);
@@ -231,9 +229,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
   async function refresh(append = false) {
     const epoch = ++requestEpoch;
     try {
-      const response = await fetch(`${api}/feedback?limit=20&after=${append ? nextAfter : 0}`, { cache: "no-store" });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
+      const result = await store.list({ limit: 20, after: append ? nextAfter : 0, include_images: true });
       if (epoch !== requestEpoch || result.version < version) return;
       version = result.version; count(result.pending_count); nextAfter = result.next_after;
       notes = append ? [...notes, ...result.notes] : result.notes;
@@ -250,7 +246,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
   function open() {
     opened = true; panel.hidden = false; document.body.classList.add("feedback-open"); toggle.setAttribute("aria-pressed", "true");
     setActive(true); layout(); refresh();
-    if (secret) { if (draft) showDraft(); else beginDraft(); }
+    if (editable) { if (draft) showDraft(); else beginDraft(); }
   }
   function close() {
     opened = false; panel.hidden = true; live(); document.body.classList.remove("feedback-open"); toggle.setAttribute("aria-pressed", "false"); setActive(false);
@@ -276,7 +272,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
   }
   canvas.onpointerdown = (event) => {
     event.preventDefault(); event.stopPropagation();
-    if (!secret || !showingDraft || !draft || busy || event.button !== 0) return;
+    if (!editable || !showingDraft || !draft || busy || event.button !== 0) return;
     const point = imagePoint(event);
     if (mode.value === "select") {
       const ray = new THREE.Raycaster(); ray.setFromCamera(new THREE.Vector2(point[0] * 2 - 1, 1 - point[1] * 2), draft.frame.camera);
@@ -307,7 +303,7 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
   };
   canvas.onpointerup = canvas.onpointercancel = () => { stroke = undefined; };
   canvas.onwheel = (event) => event.preventDefault();
-  if (secret) {
+  if (editable) {
     mode.onchange = () => { canvas.style.cursor = mode.value === "select" ? "pointer" : "crosshair"; };
     undo.onclick = () => { if (draft) { draft.strokes.pop(); repaint(); } };
     text.oninput = updateComposer;
@@ -320,11 +316,9 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
       try {
         const screenshot = document.createElement("canvas"); screenshot.width = draft.frame.image.width; screenshot.height = draft.frame.image.height;
         paint(screenshot.getContext("2d"), screenshot.width, screenshot.height, draft.frame.image, draft.strokes, draft.targets);
-        const response = await fetch(`${api}/feedback`, { method: "POST", headers: writes, body: JSON.stringify({
+        const result = await store.add({
           id: draft.id, text: text.value.trim(), scene_revision: draft.frame.scene_revision, targets: draft.targets, strokes: draft.strokes, view: draft.frame.view, image: screenshot.toDataURL("image/jpeg", .88),
-        }) });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error);
+        });
         draft = undefined; text.value = ""; live(); receive(result); toast("Feedback added");
       } catch (error) { toast(error.message); }
       finally { busy = false; updateComposer(); }
@@ -332,5 +326,5 @@ export function createFeedback({ api, secret, viewport, buttonHost, capture, res
     updateComposer();
   }
   layout();
-  return { receive, get active() { return opened; }, get hasDraft() { return !!text?.value.trim(); } };
+  return { receive, refresh, reset() { close(); draft = undefined; notes = []; version = -1; nextAfter = 0; count(0); refresh(); }, get active() { return opened; }, get hasDraft() { return !!text?.value.trim(); } };
 }

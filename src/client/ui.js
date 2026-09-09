@@ -1,4 +1,6 @@
-export const BASE = "/labs/fiend";
+import { local } from "./local.js";
+
+export const BASE = new URL("./", import.meta.url).pathname;
 export function toast(message) {
   document.querySelector(".fiend-toast")?.remove();
   const el = document.createElement("div");
@@ -10,29 +12,30 @@ export function toast(message) {
 }
 export async function copy(value) {
   try { await navigator.clipboard.writeText(value); toast("Copied to clipboard"); }
-  catch { const dialog = document.createElement("dialog"); dialog.className = "fiend-dialog"; const code = document.createElement("code"); code.textContent = value; const button = document.createElement("button"); button.className = "fiend-button"; button.textContent = "Close"; button.onclick = () => dialog.close(); dialog.append(code, button); document.body.append(dialog); dialog.onclose = () => dialog.remove(); dialog.showModal(); }
+  catch {
+    const dialog = document.createElement("dialog"); dialog.className = "fiend-dialog";
+    const code = document.createElement("code"); code.textContent = value;
+    const button = document.createElement("button"); button.className = "fiend-button";
+    button.textContent = "Close"; button.onclick = () => dialog.close();
+    dialog.append(code, button); document.body.append(dialog);
+    dialog.onclose = () => dialog.remove(); dialog.showModal();
+  }
 }
-export function connectDialog(id, secret) {
-  const endpoint = `${location.origin}${BASE}/mcp`;
-  const prompt = id ? `add ${endpoint} server and then use it to work on this scene\n\nscene_id: ${id}` : `add ${endpoint} server and then use it to build a treasure chest`;
+export function connectDialog() {
+  const available = typeof document.modelContext?.registerTool === "function";
   const dialog = document.createElement("dialog");
   dialog.className = "fiend-dialog";
   dialog.setAttribute("aria-labelledby", "connect-title");
-  dialog.innerHTML = `<h2 id="connect-title">Connect agent</h2><p>works best in <a href="http://opencode.ai/v2">opencode2</a></p><code></code><p class="context"></p><div class="actions"><button class="fiend-button close">Close</button><button class="fiend-button primary copy">Copy prompt</button></div>`;
-  dialog.querySelector("code").textContent = prompt;
-  dialog.querySelector(".context").textContent = secret ? "Paste this into your agent. The copied prompt includes this scene’s edit access." : "Paste this prompt into your agent to get started.";
+  dialog.innerHTML = `<h2 id="connect-title">Browser tools</h2><p class="availability"></p><p>Keep your scene open in a browser that supports WebMCP. Ask your agent to inspect the scene and use its modeling tools. You can edit alongside it and undo its changes in the editor.</p><div class="actions"><button class="fiend-button close">Close</button></div>`;
+  dialog.querySelector(".availability").textContent = window.fiendTools?.error ? `Tools could not register: ${window.fiendTools.error}` : available ? "WebMCP is available in this browser. Tools are registered when a scene is open." : "This browser does not expose WebMCP. Manual editing and local saving are available.";
   dialog.querySelector(".close").onclick = () => dialog.close();
-  dialog.querySelector(".copy").onclick = () => copy(secret ? `${prompt}\nsecret: ${secret}` : prompt);
   dialog.onclose = () => dialog.remove();
-  document.body.append(dialog);
-  dialog.showModal();
+  document.body.append(dialog); dialog.showModal();
 }
 export async function createScene(button, template = "starter", source_id, name = "Untitled scene") {
   button.disabled = true;
   try {
-    const response = await fetch(`${BASE}/api/scenes`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ name, template, source_id }) });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
-    location.href = `${BASE}/s/${result.id}#secret=${encodeURIComponent(result.secret)}`;
+    const result = await local.create({ name, template, source_id });
+    location.href = `${BASE}editor/index.html#scene=${encodeURIComponent(result.id)}`;
   } catch (error) { toast(error.message); button.disabled = false; }
 }

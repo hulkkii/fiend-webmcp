@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { z } from "zod";
-import { Buffer } from "node:buffer";
 
 export const BASE = "/labs/fiend";
 export const MAX_BYTES = 50 * 1024 * 1024;
@@ -55,7 +54,7 @@ export const operation = z.discriminatedUnion("type", [
 export const createInput = z.object({
   name: name.default("Untitled scene"),
   template: z.enum(["empty", "starter"]).default("starter"),
-  source_id: sceneID.optional().describe("Optional public scene ID to copy. Creates an independent editable scene with a new ID and secret."),
+  source_id: sceneID.optional().describe("Optional local scene ID to copy into an independent scene."),
 });
 export const editInput = z.object({
   operations: z.array(operation).min(1).max(100),
@@ -81,7 +80,7 @@ export type Document = {
   backgroundType: string;
   environmentType: string;
 };
-export type Snapshot = { id: string; name: string; revision: number; document: Document; updatedAt: string; source: string };
+export type Snapshot = { id: string; name: string; revision: number; document: Document; updatedAt: string; source: string; undoCount?: number; redoCount?: number };
 
 export class SceneError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -95,7 +94,7 @@ export function validateDocument(input: unknown): Document {
     backgroundType: z.string().default("Color"),
     environmentType: z.string().default("None"),
   }).parse(input) as Document;
-  const bytes = Buffer.byteLength(JSON.stringify(parsed));
+  const bytes = new TextEncoder().encode(JSON.stringify(parsed)).byteLength;
   if (bytes > MAX_BYTES) throw new SceneError(`Scene JSON is ${(bytes / 1024 / 1024).toFixed(2)} MiB; the limit is 50 MiB.`, 413);
   const ids = new Set<string>();
   function visit(node: Node, depth: number) {
@@ -325,7 +324,7 @@ export function inspect(snapshot: Snapshot) {
       material: node.material, children: node.children?.map(summarize),
     };
   }
-  return { id: snapshot.id, name: snapshot.name, revision: snapshot.revision, updatedAt: snapshot.updatedAt, storage: { bytes: Buffer.byteLength(JSON.stringify(snapshot.document)), limit_bytes: MAX_BYTES }, objects: summarize(snapshot.document.scene.object), materials: snapshot.document.scene.materials, camera: snapshot.document.camera, controls: snapshot.document.controls };
+  return { id: snapshot.id, name: snapshot.name, revision: snapshot.revision, updatedAt: snapshot.updatedAt, storage: { bytes: new TextEncoder().encode(JSON.stringify(snapshot.document)).byteLength, limit_bytes: MAX_BYTES }, objects: summarize(snapshot.document.scene.object), materials: snapshot.document.scene.materials, camera: snapshot.document.camera, controls: snapshot.document.controls };
 }
 
 export function bounds(document: Document, selector = "Scene") {

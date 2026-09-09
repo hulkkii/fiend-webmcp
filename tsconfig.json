@@ -8,7 +8,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
-    "types": ["@cloudflare/workers-types"]
+    "types": ["bun"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/build.ts", "scripts/dev.ts"]
 }

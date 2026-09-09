@@ -22,3 +22,14 @@
   .endpoint { flex-wrap: wrap; padding: 16px; }
   .endpoint > code { flex-basis: 100%; }
 }
+
+.library { margin-bottom: 40px; }
+.library-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.storage-note, .connection p { color: var(--muted); font-size: 12px; }
+#scene-list { border-top: 1px solid var(--line); padding-top: 16px; }
+.scene-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.scene-details { min-width: 0; }
+.scene-details a { display: block; color: var(--bright); font-size: 14px; overflow-wrap: anywhere; }
+.scene-details small { color: var(--muted); font-size: 10px; }
+.connection h2 { font-size: 13px; font-weight: 400; }
+@media (max-width: 700px) { .scene-row { align-items: flex-start; flex-direction: column; gap: 12px; } }

@@ -29,7 +29,7 @@ try {
   }
 
   // This GLB was modeled and exported through Fiend's public MCP server.
-  const asset = await new GLTFLoader().loadAsync("/labs/fiend/assets/fiend.glb");
+  const asset = await new GLTFLoader().loadAsync(new URL("./assets/fiend.glb", import.meta.url).href);
   const bounds = new THREE.Box3().setFromObject(asset.scene);
   const center = bounds.getCenter(new THREE.Vector3());
   const size = bounds.getSize(new THREE.Vector3());
