@@ -2,6 +2,7 @@ import { BASE, createInput, sceneID, SceneError } from "./scene";
 import { createScene, handleMcp, room } from "./mcp";
 import { failure, readJSON, type Env } from "./room";
 import { sceneImage, sceneMetadata } from "./og";
+import { downloadGLB } from "./download";
 export { SceneRoom } from "./room";
 
 export default {
@@ -44,6 +45,8 @@ export default {
         return env.SCENES.getByName(id).fetch(new Request(internal, request));
       }
       if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
+      const download = path.match(/^\/labs\/fiend\/s\/([^/]+)\.glb$/);
+      if (download) return await downloadGLB(request, env, ctx, sceneID.parse(download[1]));
       const image = path.match(/^\/labs\/fiend\/api\/scenes\/([^/]+)\/og\.png$/);
       if (image) return await sceneImage(request, env, ctx, sceneID.parse(image[1]));
       const scene = path.match(/^\/labs\/fiend\/(s|render)\/([^/]+)\/?$/);

@@ -7,12 +7,13 @@ A live 3D asset workshop for you and your agents. Build with constrained modelin
 - **Public MCP:** https://anoma.ly/labs/fiend/mcp
 - **Read-only links:** `https://anoma.ly/labs/fiend/s/{scene_id}`
 - **Collaborative edit links:** `https://anoma.ly/labs/fiend/s/{scene_id}#secret={secret}`
+- **GLB downloads:** `https://anoma.ly/labs/fiend/s/{scene_id}.glb`
 
 Try the [Witchlight lantern scene](https://anoma.ly/labs/fiend/s/6189a211-3709-4396-9072-404f8e447604), built entirely through MCP tools, or [download its GLB](https://anoma.ly/labs/fiend/api/scenes/6189a211-3709-4396-9072-404f8e447604/assets/6d9c068b-efd4-4e9e-b8f2-0f7849c3ecc6.glb).
 
 The homepage's [twisted mask](https://anoma.ly/labs/fiend/s/3878c569-318f-4539-b31b-01105dd4f9f2) was also built and exported through Fiend. Its GLB and public provenance are in `src/client/assets/`; the homepage displays a slow, one-minute turntable rotation.
 
-No account or global API key. `create_scene` returns a public `id`, a private `secret`, a read-only `url`, and a collaborative `edit_url`. Every other tool requires `scene_id`; write tools also require `secret`. The ID alone grants read access, never write access. There is no public scene index.
+No account or global API key. `create_scene` returns a public `id`, a private `secret`, a read-only `url`, a collaborative `edit_url`, and a `glb_url`. Every other tool requires `scene_id`; write tools also require `secret`. The ID alone grants read and download access, never scene-write access. There is no public scene index.
 
 The edit secret is a random 256-bit capability, returned only at creation. Only its SHA-256 hash is stored in a separate Durable Object table. The secret is excluded from scene documents, history, snapshots, WebSocket messages, asset downloads, and ordinary tool results. The edit link carries it in a URL fragment, which is not sent in page requests or referrer headers. The editor sends it only in the `Authorization: Bearer ...` header for access verification and writes. Public view links carry no credential, even in a browser that also has the edit link open.
 
@@ -32,7 +33,7 @@ Public scene links include server-rendered Open Graph and Twitter metadata. Prev
 2. **Assemble:** pass `scene_id` and `secret` to write tools. Create a named group for the asset and build its parts with meshes, extrusions, lathed profiles, and tubes. Use `edit_scene` to apply related operations atomically in one undo step. Later operations can reference names created earlier in the same batch.
 3. **Inspect:** use `inspect_scene` for the hierarchy and `inspect_object` for materials, transforms and world-space bounds. Names should be unique; UUIDs always work.
 4. **Refine:** use `frame_object`, then `capture_scene` to see a PNG rendered on Cloudflare. Adjust shapes, placement, lighting and PBR materials. A user can make direct editor changes simultaneously.
-5. **Export:** call `export_asset` with `scene_id`, `secret` and the asset group's UUID or name. It requires write access because it persists an export, and returns a public, immutable GLB URL with the source revision and byte size. Preview lights and cameras are excluded. Both the editor and read-only viewer can download a local GLB without persisting a server-side export.
+5. **Download:** fetch `https://anoma.ly/labs/fiend/s/{scene_id}.glb` directly. Add `?object={URL-encoded UUID or unique name}` for a particular object/group. No tool call or secret is required. `export_asset` is a convenience tool that returns this URL immediately. The file is generated on demand with preview lights/cameras excluded; results are cached per scene revision and object. The URL follows the current scene, so download it into your game's assets for a fixed copy.
 
 Coordinates are **Y-up**, with **meters** as the convention. Euler rotations use **radians, XYZ order**. Colors are `#rrggbb`. Group origins define asset pivots. Exports retain each selected object's local transform and its child hierarchy; an ancestor's transforms are not baked into a selected child.
 
@@ -67,6 +68,12 @@ Primitive meshes: box, sphere, cylinder, cone, torus, plane, icosahedron, capsul
 `capture_scene` renders the saved camera without needing a connected viewer. It returns both an image and named object positions in pixel coordinates, plus world-space bounds. `inFrame` describes a projected center, not an occlusion test. Browser editor helper overlays are not included.
 
 ### Import into a game
+
+```sh
+curl -L "https://anoma.ly/labs/fiend/s/SCENE_ID.glb" -o asset.glb
+# One group:
+curl -L "https://anoma.ly/labs/fiend/s/SCENE_ID.glb?object=Lantern" -o lantern.glb
+```
 
 ```ts
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js"
@@ -108,7 +115,7 @@ The scene persists even when every browser closes. Browser reconnects receive th
 - Up to 100 operations per atomic batch and 100 simultaneous viewers per scene.
 - Last 20 edits available in shared undo history.
 - Up to 100 outstanding feedback notes and 64 MiB of feedback images per scene; each screenshot is at most 1 MiB. Resolving notes frees their storage.
-- Saved GLBs: up to 8 MiB each and 64 MiB total per scene. Existing download URLs remain immutable. Direct browser GLB downloads are independent of this storage allowance.
+- Older persisted GLB downloads remain available and immutable (8 MiB each, 64 MiB per scene). New on-demand `.glb` URLs stream the export and do not consume that storage allowance.
 - Shared persistence covers scene geometry, materials, textures, lights and camera. The upstream editor's executable project scripts are not part of the shared asset document.
 - Headless capture/export uses Cloudflare Browser Run and its account concurrency limits.
 
@@ -135,6 +142,7 @@ Routes are restricted to `anoma.ly/labs/fiend` and `anoma.ly/labs/fiend/*`. The 
 
 ```text
 src/worker.ts       URL routing, assets and public HTTP API
+src/download.ts     on-demand, revision-cached GLB download URLs
 src/mcp.ts          MCP tools and Cloudflare rendering/export orchestration
 src/room.ts         Durable Object persistence, history, exports and WebSockets
 src/storage.ts      chunked SQLite storage for large documents and exports

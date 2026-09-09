@@ -8,6 +8,11 @@ import { createSecret, editSecret, secretHash } from "./access";
 import { resolveFeedbackInput, type FeedbackPage, type FeedbackResolution } from "./feedback";
 
 export function sceneURL(origin: string, id: string) { return `${origin}${BASE}/s/${id}`; }
+export function glbURL(origin: string, id: string, object = "Scene") {
+  const url = new URL(`${sceneURL(origin, id)}.glb`);
+  if (object !== "Scene") url.searchParams.set("object", object);
+  return url.href;
+}
 
 export async function room<T = Snapshot & { created?: { uuid: string; name: string }[] }>(env: Env, id: string, path = "/", body?: unknown, secret?: string): Promise<T> {
   sceneID.parse(id);
@@ -28,7 +33,7 @@ export async function createScene(env: Env, origin: string, input: z.infer<typeo
   const source = input.source_id ? await room(env, input.source_id) : undefined;
   const snapshot = await room(env, id, "/create", { name: input.name, template: input.template, id, secret_hash: await secretHash(secret), document: source?.document });
   const url = sceneURL(origin, id);
-  return { id, secret, name: snapshot.name, revision: snapshot.revision, url, edit_url: `${url}#secret=${secret}`, mcp: `${origin}${BASE}/mcp` };
+  return { id, secret, name: snapshot.name, revision: snapshot.revision, url, edit_url: `${url}#secret=${secret}`, glb_url: glbURL(origin, id), mcp: `${origin}${BASE}/mcp` };
 }
 
 function text(value: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] }; }
@@ -60,13 +65,13 @@ export async function handleMcp(request: Request, env: Env) {
   if (request.method === "GET" || request.method === "DELETE") return new Response(null, { status: 405, headers: { allow: "POST" } });
   const origin = new URL(request.url).origin;
   const server = new McpServer({ name: "fiend", version: "0.1.0" }, {
-    instructions: "Fiend is a public, collaborative Three.js editor. create_scene returns id, secret, url (public read-only) and edit_url (private collaborative URL with the secret in its fragment). Give the owner the edit_url and use url for public sharing. Retain the secret privately: it is returned only at creation. Every subsequent tool requires scene_id; all write tools also require secret, including undo/redo, export_asset and resolve_feedback. Read tools require only the public ID. Never put the secret in object names, scene metadata, feedback, public links or exported data. To copy a read-only or legacy scene, use create_scene with source_id. When the user says they left feedback, call get_feedback: it returns pending notes, selected object UUIDs, saved camera/shading, drawing coordinates and annotated screenshots. Read all pages if has_more. Fetching does not clear notes. Make the requested scene changes, then call resolve_feedback with only the feedback_ids you addressed. New notes remain pending. Feedback screenshots record the original view and revision; inspect the latest objects before editing because the scene may have changed. Select objects by UUID or unique name. Units are meters, Y is up, rotations are radians in XYZ order, colors are #rrggbb. Use edit_scene for atomic batches and frame_object then capture_scene to inspect results. Browser navigation and feedback do not create scene-edit revisions. Prefer compact inspection over exporting full JSON.",
+    instructions: "Fiend is a public, collaborative Three.js editor. create_scene returns id, secret, url (public read-only), edit_url (private collaborative URL with the secret in its fragment), and glb_url. Give the owner edit_url and use url for public sharing. Retain the secret privately; it is only returned at creation. Scene edits, undo/redo and resolve_feedback require secret. Reads and GLB downloads require only the public ID. To download a game-ready GLB, fetch https://anoma.ly/labs/fiend/s/{scene_id}.glb directly; no tool call or secret is needed. Add ?object={URL-encoded object UUID or unique name} to export a specific group. Fetching generates the current asset on demand, strips preview lights/cameras and preserves geometry, materials and hierarchy. export_asset simply returns this URL. The URL follows the latest scene; download the file into your game for a fixed asset. Never put secrets in scene data, feedback, public URLs or exports. To copy a scene, use create_scene with source_id. When the user left feedback, call get_feedback, read all pages, make the requested changes, then resolve_feedback with only the addressed IDs. Fetching never clears notes. Feedback records the original view/revision, so inspect current objects before editing. Select objects by UUID or unique name. Units are meters, Y is up, rotations are XYZ radians, colors are #rrggbb. Use edit_scene for atomic batches and frame_object then capture_scene to inspect results. Browser navigation and feedback do not create scene revisions. Prefer compact inspection over full JSON.",
   });
-  server.registerTool("create_scene", { description: "Create a persistent scene and return its public id, private edit secret, read-only url and collaborative edit_url. Save the secret; it is only returned at creation. No account required. Optionally copy an existing public scene using source_id.", inputSchema: createInput.shape }, async (input) => {
+  server.registerTool("create_scene", { description: "Create a persistent scene and return its public id, private edit secret, read-only url, collaborative edit_url and direct glb_url. Save the secret; it is only returned at creation. No account required. Optionally copy an existing public scene using source_id.", inputSchema: createInput.shape }, async (input) => {
     try { return text(await createScene(env, origin, input)); } catch (error) { return errorResult(error); }
   });
   server.registerTool("inspect_scene", { description: "Get the scene hierarchy, object UUIDs/names, transforms, materials, shared camera and current revision. Compact alternative to raw scene JSON.", inputSchema: { scene_id: sceneID }, annotations: { readOnlyHint: true } }, async ({ scene_id }) => {
-    try { return text({ ...inspect(await room(env, scene_id)), url: sceneURL(origin, scene_id) }); } catch (error) { return errorResult(error); }
+    try { return text({ ...inspect(await room(env, scene_id)), url: sceneURL(origin, scene_id), glb_url: glbURL(origin, scene_id) }); } catch (error) { return errorResult(error); }
   });
   server.registerTool("inspect_object", { description: "Inspect an object or group by UUID or unique name, including its raw Three.js properties, materials and world-space bounds. Useful for precise placement and sizing.", inputSchema: { scene_id: sceneID, object: z.string() }, annotations: { readOnlyHint: true } }, async ({ scene_id, object }) => {
     try {
@@ -99,8 +104,8 @@ export async function handleMcp(request: Request, env: Env) {
       try { const snapshot = await room(env, scene_id, `/${action}`, { revision }, secret); return text({ id: scene_id, revision: snapshot.revision, url: sceneURL(origin, scene_id) }); } catch (error) { return errorResult(error); }
     });
   }
-  server.registerTool("get_scene_link", { description: "Return the public read-only share link for a scene. The ID and this URL cannot authorize writes or reveal the edit secret.", inputSchema: { scene_id: sceneID }, annotations: { readOnlyHint: true } }, async ({ scene_id }) => {
-    try { const snapshot = await room(env, scene_id); return text({ id: scene_id, name: snapshot.name, url: sceneURL(origin, scene_id) }); } catch (error) { return errorResult(error); }
+  server.registerTool("get_scene_link", { description: "Return the public read-only share link and direct glb_url for a scene. Fetch glb_url to generate and download the current asset. These URLs cannot authorize writes or reveal the edit secret.", inputSchema: { scene_id: sceneID }, annotations: { readOnlyHint: true } }, async ({ scene_id }) => {
+    try { const snapshot = await room(env, scene_id); return text({ id: scene_id, name: snapshot.name, url: sceneURL(origin, scene_id), glb_url: glbURL(origin, scene_id) }); } catch (error) { return errorResult(error); }
   });
   server.registerTool("get_feedback", {
     description: "Fetch pending human feedback with object UUIDs/names, saved camera/rendering mode, scene revision, drawing summaries and annotated screenshots. Reading never clears notes. Follow next_after when has_more, then resolve only the notes you address. Images are in note order, labeled by feedback ID. Raw normalized drawing points are optional to keep the normal response compact.",
@@ -146,23 +151,15 @@ export async function handleMcp(request: Request, env: Env) {
       } finally { await browser.close(); }
     } catch (error) { return errorResult(error); }
   });
-  server.registerTool("export_asset", { description: "Save a selected object/group (or Scene) as an immutable, self-contained GLB asset. Requires the edit secret because it writes an export. Removes preview lights/cameras and preserves mesh names, hierarchy, pivots and PBR materials. Returns a public download URL without the secret. Units are meters, Y-up.", inputSchema: { scene_id: sceneID, secret: editSecret, object: z.string().default("Scene") } }, async ({ scene_id, secret, object }) => {
+  server.registerTool("export_asset", {
+    description: "Return a public URL to download a self-contained GLB of the scene or selected object/group. No secret required. Fetch the URL to generate the current asset on demand; no separate export job is needed. Preview lights/cameras are excluded, with names, hierarchy, pivots and PBR materials preserved. Download the file into your game for a fixed asset, since the URL follows scene updates.",
+    inputSchema: { scene_id: sceneID, object: z.string().min(1).max(200).default("Scene"), secret: editSecret.optional().describe("Not required; accepted for older clients") },
+    annotations: { readOnlyHint: true },
+  }, async ({ scene_id, object }) => {
     try {
-      const access = await env.SCENES.getByName(scene_id).fetch("https://scene/access", { headers: { authorization: `Bearer ${secret}` } });
-      if (!access.ok) throw new SceneError("A valid scene edit secret is required", 403);
-      await room(env, scene_id);
-      const browser = await puppeteer.launch(env.BROWSER);
-      try {
-        const page = await browser.newPage();
-        await page.goto(`${origin}${BASE}/render/${scene_id}`, { waitUntil: "networkidle0", timeout: 45000 });
-        await page.waitForFunction("window.fiendExport || window.fiendError", { timeout: 30000 });
-        const result = await page.evaluate(`window.fiendExport ? window.fiendExport(${JSON.stringify(object)}) : { error: window.fiendError }`) as { error?: string; data: string; revision: number; bytes: number };
-        if (result.error) throw new Error(result.error);
-        const response = await env.SCENES.getByName(scene_id).fetch("https://scene/asset", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${secret}` }, body: JSON.stringify(result) });
-        const asset = await response.json<{ error?: string; id: string }>();
-        if (!response.ok) throw new Error(asset.error);
-        return text({ scene_id, object, revision: result.revision, bytes: result.bytes, format: "glb", url: `${origin}${BASE}/api/scenes/${scene_id}/assets/${asset.id}.glb`, scene: sceneURL(origin, scene_id) });
-      } finally { await browser.close(); }
+      const snapshot = await room(env, scene_id);
+      find(snapshot.document.scene.object, object);
+      return text({ scene_id, object, revision: snapshot.revision, format: "glb", url: glbURL(origin, scene_id, object), scene: sceneURL(origin, scene_id) });
     } catch (error) { return errorResult(error); }
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
