@@ -1,10 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
-import { createInput, editDocument, editInput, initialDocument, MAX_BYTES, SceneError, validateDocument, type Snapshot, type Document } from "./scene";
+import { createInput, editDocument, editInput, initialDocument, MAX_REQUEST_BYTES, SceneError, validateDocument, type Snapshot, type Document } from "./scene";
 import { diffScene, mergeScene } from "./sync";
 import { editSecret, sameHash, secretHash } from "./access";
 import { Buffer } from "node:buffer";
 import { feedbackInput, feedbackQuery, resolveFeedbackInput, type FeedbackNote } from "./feedback";
+import { SceneStorage } from "./storage";
 
 export type Env = { SCENES: DurableObjectNamespace<SceneRoom>; ASSETS: Fetcher; BROWSER: Fetcher };
 
@@ -15,33 +16,37 @@ export function failure(error: unknown) {
   return Response.json({ error: "An unexpected error occurred" }, { status: 500 });
 }
 
-export async function readJSON(request: Request, limit = MAX_BYTES) {
+export async function readJSON(request: Request, limit = MAX_REQUEST_BYTES) {
   if (Number(request.headers.get("content-length")) > limit) throw new SceneError("Request exceeds size limit", 413);
   const reader = request.body?.getReader();
   if (!reader) throw new SceneError("JSON body required");
-  const parts: Uint8Array[] = [];
+  const parts: string[] = [];
+  const decoder = new TextDecoder();
   let size = 0;
   while (true) {
     const chunk = await reader.read();
     if (chunk.done) break;
     size += chunk.value.byteLength;
     if (size > limit) { await reader.cancel(); throw new SceneError("Request exceeds size limit", 413); }
-    parts.push(chunk.value);
+    parts.push(decoder.decode(chunk.value, { stream: true }));
   }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
-  try { return JSON.parse(new TextDecoder().decode(bytes)); }
+  parts.push(decoder.decode());
+  const text = parts.join("");
+  parts.length = 0;
+  try { return JSON.parse(text); }
   catch { throw new SceneError("Invalid JSON"); }
 }
 
 export class SceneRoom extends DurableObject<Env> {
+  private data: SceneStorage;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.data = new SceneStorage(ctx.storage.sql);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS scene (id INTEGER PRIMARY KEY CHECK (id = 1), snapshot TEXT NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, document TEXT NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS redo (id INTEGER PRIMARY KEY AUTOINCREMENT, document TEXT NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, data BLOB NOT NULL, revision INTEGER NOT NULL)");
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS asset_files (id TEXT PRIMARY KEY, blob TEXT NOT NULL, bytes INTEGER NOT NULL, revision INTEGER NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS scene_auth (id INTEGER PRIMARY KEY CHECK (id = 1), secret_hash TEXT NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS feedback (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, note TEXT NOT NULL, image BLOB NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS feedback_receipts (id TEXT PRIMARY KEY)");
@@ -54,11 +59,20 @@ export class SceneRoom extends DurableObject<Env> {
   private get(): Snapshot {
     const row = this.ctx.storage.sql.exec<{ snapshot: string }>("SELECT snapshot FROM scene WHERE id = 1").toArray()[0];
     if (!row) throw new SceneError("Scene not found", 404);
-    return JSON.parse(row.snapshot);
+    return this.data.decode<Snapshot>(row.snapshot);
   }
 
   private persist(snapshot: Snapshot) {
-    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO scene (id, snapshot) VALUES (1, ?)", JSON.stringify(snapshot));
+    const previous = this.ctx.storage.sql.exec<{ snapshot: string }>("SELECT snapshot FROM scene WHERE id = 1").toArray()[0];
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO scene (id, snapshot) VALUES (1, ?)", this.data.encode(snapshot));
+    if (previous) this.data.drop(previous.snapshot);
+  }
+
+  private trimHistory() {
+    for (const row of this.ctx.storage.sql.exec<{ document: string }>("SELECT document FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT 20)").toArray()) this.data.drop(row.document);
+    this.ctx.storage.sql.exec("DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT 20)");
+    for (const row of this.ctx.storage.sql.exec<{ document: string }>("SELECT document FROM redo").toArray()) this.data.drop(row.document);
+    this.ctx.storage.sql.exec("DELETE FROM redo");
   }
 
   private async authorize(request: Request) {
@@ -98,9 +112,8 @@ export class SceneRoom extends DurableObject<Env> {
     const next = { ...current, document, revision: current.revision + 1, updatedAt: new Date().toISOString(), source };
     this.ctx.storage.transactionSync(() => {
       if (history) {
-        this.ctx.storage.sql.exec("INSERT INTO history (document) VALUES (?)", JSON.stringify(current.document));
-        this.ctx.storage.sql.exec("DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT 20)");
-        this.ctx.storage.sql.exec("DELETE FROM redo");
+        this.ctx.storage.sql.exec("INSERT INTO history (document) VALUES (?)", this.data.encode(current.document));
+        this.trimHistory();
       }
       this.persist(next);
     });
@@ -114,7 +127,7 @@ export class SceneRoom extends DurableObject<Env> {
       const path = url.pathname;
       // Consume the bounded forwarded body before responding, including on auth
       // failure, so no request stream outlives its Worker/DO response.
-      const body = request.method === "POST" ? await readJSON(request, path === "/asset" ? 12 * 1024 * 1024 : MAX_BYTES) : undefined;
+      const body = request.method === "POST" ? await readJSON(request, path === "/asset" ? 12 * 1024 * 1024 : MAX_REQUEST_BYTES) : undefined;
       if (path === "/access" && request.method === "GET") {
         await this.authorize(request);
         return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
@@ -174,19 +187,23 @@ export class SceneRoom extends DurableObject<Env> {
       }
       if (path.startsWith("/assets/") && request.method === "GET") {
         const id = z.uuid().parse(path.slice(8));
+        const file = this.ctx.storage.sql.exec<{ blob: string }>("SELECT blob FROM asset_files WHERE id = ?", id).toArray()[0];
         const row = this.ctx.storage.sql.exec<{ data: ArrayBuffer }>("SELECT data FROM assets WHERE id = ?", id).toArray()[0];
-        if (!row) throw new SceneError("Asset not found", 404);
-        return new Response(row.data, { headers: { "content-type": "model/gltf-binary", "content-disposition": `attachment; filename="fiend-${id}.glb"`, "cache-control": "public, max-age=31536000, immutable", "access-control-allow-origin": "*" } });
+        if (!file && !row) throw new SceneError("Asset not found", 404);
+        return new Response(file ? this.data.read(file.blob) : row!.data, { headers: { "content-type": "model/gltf-binary", "content-disposition": `attachment; filename="fiend-${id}.glb"`, "cache-control": "public, max-age=31536000, immutable", "access-control-allow-origin": "*" } });
       }
       if (path === "/asset" && request.method === "POST") {
         const input = z.object({ data: z.string(), revision: z.number().int() }).parse(body);
         this.get();
         const data = Uint8Array.from(atob(input.data), (char) => char.charCodeAt(0));
         if (data.byteLength > 8 * 1024 * 1024) throw new SceneError("GLB exceeds 8 MiB", 413);
-        const total = this.ctx.storage.sql.exec<{ size: number }>("SELECT COALESCE(SUM(length(data)), 0) AS size FROM assets").one().size;
+        const total = this.ctx.storage.sql.exec<{ size: number }>("SELECT (SELECT COALESCE(SUM(length(data)), 0) FROM assets) + (SELECT COALESCE(SUM(bytes), 0) FROM asset_files) AS size").one().size;
         if (total + data.byteLength > 64 * 1024 * 1024) throw new SceneError("Scene's saved exports exceed 64 MiB; use the editor's direct GLB download", 413);
         const id = crypto.randomUUID();
-        this.ctx.storage.sql.exec("INSERT INTO assets (id, data, revision) VALUES (?, ?, ?)", id, data, input.revision);
+        this.ctx.storage.transactionSync(() => {
+          const blob = this.data.write(data);
+          this.ctx.storage.sql.exec("INSERT INTO asset_files (id, blob, bytes, revision) VALUES (?, ?, ?, ?)", id, blob, data.byteLength, input.revision);
+        });
         return Response.json({ id, revision: input.revision, bytes: data.byteLength });
       }
       if (path === "/create" && request.method === "POST") {
@@ -243,8 +260,9 @@ export class SceneRoom extends DurableObject<Env> {
         let next!: Snapshot;
         this.ctx.storage.transactionSync(() => {
           this.ctx.storage.sql.exec(`DELETE FROM ${from} WHERE id = ?`, row.id);
-          this.ctx.storage.sql.exec(`INSERT INTO ${to} (document) VALUES (?)`, JSON.stringify(current.document));
-          next = { ...current, document: JSON.parse(row.document), revision: current.revision + 1, updatedAt: new Date().toISOString(), source: path.slice(1) };
+          this.ctx.storage.sql.exec(`INSERT INTO ${to} (document) VALUES (?)`, this.data.encode(current.document));
+          next = { ...current, document: this.data.decode<Document>(row.document), revision: current.revision + 1, updatedAt: new Date().toISOString(), source: path.slice(1) };
+          this.data.drop(row.document);
           this.persist(next);
         });
         this.broadcast(next);

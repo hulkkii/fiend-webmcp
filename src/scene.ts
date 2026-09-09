@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import { z } from "zod";
+import { Buffer } from "node:buffer";
 
 export const BASE = "/labs/fiend";
-export const MAX_BYTES = 2 * 1024 * 1024;
+export const MAX_BYTES = 50 * 1024 * 1024;
+export const MAX_REQUEST_BYTES = 64 * 1024 * 1024;
 export const sceneID = z.uuid();
 const vector = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a hex color, e.g. #a78bfa");
@@ -67,6 +69,7 @@ export type SceneJSON = {
   object: Node;
   geometries?: Asset[];
   materials?: Asset[];
+  shapes?: Asset[];
   textures?: Asset[];
   images?: Asset[];
   [key: string]: unknown;
@@ -92,7 +95,8 @@ export function validateDocument(input: unknown): Document {
     backgroundType: z.string().default("Color"),
     environmentType: z.string().default("None"),
   }).parse(input) as Document;
-  if (new TextEncoder().encode(JSON.stringify(parsed)).length > MAX_BYTES) throw new SceneError("Scene exceeds the 2 MiB limit", 413);
+  const bytes = Buffer.byteLength(JSON.stringify(parsed));
+  if (bytes > MAX_BYTES) throw new SceneError(`Scene JSON is ${(bytes / 1024 / 1024).toFixed(2)} MiB; the limit is 50 MiB.`, 413);
   const ids = new Set<string>();
   function visit(node: Node, depth: number) {
     if (depth > 64 || ids.size >= 2000) throw new SceneError("Scene exceeds 2,000 objects or 64 levels");
@@ -171,7 +175,12 @@ function setMaterial(target: Asset, input: z.infer<typeof material>) {
 }
 
 export function editDocument(original: Document, operations: z.infer<typeof operation>[]) {
-  const document = structuredClone(original);
+  // Copy mutable graph records, sharing large immutable geometry/image payloads.
+  function copyNode(node: Node): Node { return { ...node, ...(node.children ? { children: node.children.map(copyNode) } : {}) }; }
+  const document: Document = { ...original, scene: {
+    ...original.scene, object: copyNode(original.scene.object),
+    geometries: [...(original.scene.geometries ?? [])], materials: [...(original.scene.materials ?? [])], shapes: [...(original.scene.shapes ?? [])],
+  } };
   const root = document.scene.object;
   const created: { uuid: string; name: string }[] = [];
   for (const op of operations) {
@@ -203,9 +212,9 @@ export function editDocument(original: Document, operations: z.infer<typeof oper
         const geometry = op.type === "add_extrusion" ? new THREE.ExtrudeGeometry(new THREE.Shape(op.points.map(([x, y]) => new THREE.Vector2(x, y))), { depth: op.depth, bevelEnabled: op.bevel > 0, bevelSize: op.bevel, bevelThickness: op.bevel, bevelSegments: 2, steps: 1 })
           : op.type === "add_lathe" ? new THREE.LatheGeometry(op.points.map(([x, y]) => new THREE.Vector2(x, y)), op.segments)
           : new THREE.TubeGeometry(new THREE.CatmullRomCurve3(op.points.map((point) => new THREE.Vector3(...point)), op.closed), 64, op.radius, 12, op.closed);
-        // Bake parametric custom shapes to BufferGeometry for portable ObjectLoader exports.
-        const baked = new THREE.BufferGeometry().copy(geometry);
-        object = new THREE.Mesh(baked, new THREE.MeshStandardMaterial({ color: "#b3ef72", roughness: 0.5 }));
+        // Three.js can serialize these recipes directly. Baking them into vertex
+        // arrays made tiny tool inputs expand into hundreds of kilobytes of JSON.
+        object = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: "#b3ef72", roughness: 0.5 }));
       } else {
         const [a, b, c] = op.size ?? [1, 1, 1];
         if (a <= 0 || b <= 0 || c <= 0 || Math.max(a, b, c) > 10000) throw new SceneError("Geometry dimensions must be between 0 and 10,000");
@@ -228,7 +237,7 @@ export function editDocument(original: Document, operations: z.infer<typeof oper
       setTransform(json.object, op);
       const parent = op.parent ? find(root, op.parent) : root;
       (parent.children ??= []).push(json.object);
-      for (const key of ["geometries", "materials"] as const) if (json[key]) (document.scene[key] ??= []).push(...json[key]);
+      for (const key of ["geometries", "materials", "shapes"] as const) if (json[key]) (document.scene[key] ??= []).push(...json[key]);
       created.push({ uuid: object.uuid, name: op.name });
       continue;
     }
@@ -249,7 +258,7 @@ export function editDocument(original: Document, operations: z.infer<typeof oper
       document.controls = { center: center.toArray() };
     } else if (op.type === "duplicate") {
       if (object === root) throw new SceneError("Duplicate a group or object, not the scene root");
-      const copy = structuredClone(object);
+      const copy = copyNode(object);
       function renew(node: Node) { node.uuid = crypto.randomUUID(); for (const child of node.children ?? []) renew(child); }
       renew(copy);
       copy.name = op.name;
@@ -300,6 +309,8 @@ export function editDocument(original: Document, operations: z.infer<typeof oper
   collect(root);
   document.scene.geometries = document.scene.geometries?.filter((item) => geometries.has(item.uuid));
   document.scene.materials = document.scene.materials?.filter((item) => materials.has(item.uuid));
+  const shapes = new Set(document.scene.geometries?.flatMap((item) => Array.isArray(item.shapes) ? item.shapes : []));
+  document.scene.shapes = document.scene.shapes?.filter((item) => shapes.has(item.uuid));
   return { document: validateDocument(document), created };
 }
 
@@ -314,12 +325,15 @@ export function inspect(snapshot: Snapshot) {
       material: node.material, children: node.children?.map(summarize),
     };
   }
-  return { id: snapshot.id, name: snapshot.name, revision: snapshot.revision, updatedAt: snapshot.updatedAt, objects: summarize(snapshot.document.scene.object), materials: snapshot.document.scene.materials, camera: snapshot.document.camera, controls: snapshot.document.controls };
+  return { id: snapshot.id, name: snapshot.name, revision: snapshot.revision, updatedAt: snapshot.updatedAt, storage: { bytes: Buffer.byteLength(JSON.stringify(snapshot.document)), limit_bytes: MAX_BYTES }, objects: summarize(snapshot.document.scene.object), materials: snapshot.document.scene.materials, camera: snapshot.document.camera, controls: snapshot.document.controls };
 }
 
 export function bounds(document: Document, selector = "Scene") {
   const target = find(document.scene.object, selector);
-  const geometries = new THREE.ObjectLoader().parseGeometries(document.scene.geometries ?? []);
+  // r186 accepts the shape registry as a second argument; @types/three lags it.
+  const loader = new THREE.ObjectLoader() as THREE.ObjectLoader & { parseShapes(json: unknown): Record<string, THREE.Shape> };
+  const parse: (json: unknown, shapes: Record<string, THREE.Shape>) => ReturnType<THREE.ObjectLoader["parseGeometries"]> = loader.parseGeometries.bind(loader);
+  const geometries = parse(document.scene.geometries ?? [], loader.parseShapes(document.scene.shapes));
   const box = new THREE.Box3();
   function walk(node: Node, parent: THREE.Matrix4, inside: boolean) {
     const matrix = new THREE.Matrix4().fromArray(node.matrix ?? new THREE.Matrix4().toArray());

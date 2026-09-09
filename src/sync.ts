@@ -17,6 +17,16 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function equal(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((value, index) => equal(value, right[index]));
+  if (record(left) && record(right)) {
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && equal(left[key], right[key]));
+  }
+  return false;
+}
+
 function flatten(document: Document): FlatScene {
   const properties = { ...document.scene };
   delete (properties as Partial<SceneJSON>).object;
@@ -45,7 +55,7 @@ export function diffScene(before: Document, after: Document): Patch[] {
   const patches: Patch[] = [];
   const left = flatten(before), right = flatten(after);
   function visit(left: unknown, right: unknown, path: string[]) {
-    if (JSON.stringify(left) === JSON.stringify(right)) return;
+    if (left === right) return;
     if (record(left) && record(right)) {
       for (const key of Object.keys(left)) {
         // A concurrent clone may still reference an asset its original no longer uses.
@@ -54,6 +64,7 @@ export function diffScene(before: Document, after: Document): Patch[] {
       for (const key of Object.keys(right)) visit(left[key], right[key], [...path, key]);
       return;
     }
+    if (equal(left, right)) return;
     if (right === undefined) patches.push({ op: "remove", path });
     else patches.push({ op: "set", path, value: right });
   }
@@ -80,7 +91,7 @@ export function diffScene(before: Document, after: Document): Patch[] {
 /** Different properties merge; the latest write to the same property wins.
  * A stale edit to a deleted object is ignored rather than resurrecting it. */
 export function mergeScene(document: Document, patches: Patch[]): Document {
-  const flat = structuredClone(flatten(document));
+  const flat = flatten(document);
   for (const patch of patches) {
     if (!patch.path.length || patch.path.length > 80 || patch.path.some((key) => forbidden.has(key))) throw new Error("Invalid edit path");
     if (!["root", "properties", "objects", "resources", "backgroundType", "environmentType"].includes(patch.path[0]!)) throw new Error("Invalid scene edit");
@@ -88,12 +99,14 @@ export function mergeScene(document: Document, patches: Patch[]): Document {
     for (const key of patch.path.slice(0, -1)) {
       const next: unknown = target?.[key];
       if (!record(next)) { target = undefined; break; }
-      target = next;
+      const copy = { ...next };
+      target![key] = copy;
+      target = copy;
     }
     if (!target) continue;
     const key = patch.path.at(-1)!;
     if (patch.op === "remove") delete target[key];
-    else if (patch.op !== "ensure" || !Object.hasOwn(target, key)) target[key] = structuredClone(patch.value);
+    else if (patch.op !== "ensure" || !Object.hasOwn(target, key)) target[key] = patch.value;
   }
   const children = new Map<string, [string, ObjectEntry][]>();
   for (const [id, object] of Object.entries(flat.objects)) {

@@ -98,11 +98,13 @@ MCP mutations operate on Three.js JSON without evaluating agent-written code. Ea
 
 Browser edits are property-level patches keyed by object and resource UUID, rather than full-scene replacements. Different properties merge automatically; the latest write to the same property wins. Pending local edits are rebased over incoming updates without a reload or conflict dialog. Deletions win over stale property edits, concurrent additions retain their geometry/material dependencies, and hierarchy cycles are rejected. Revisions remain an internal ordering and undo mechanism. A no-op save does not create a revision.
 
+Procedural tubes, lathes and extrusions keep their compact Three.js recipes instead of storing expanded vertex arrays. Scene documents, undo/redo entries, and GLB exports can span 512 KiB SQLite chunks, avoiding Cloudflare's 2 MB per-row limit. Existing inline snapshots and exports remain readable. `inspect_scene` reports current JSON bytes and the scene allowance; use `duplicate_object` for repeated parts to share geometry. Splitting a batch does not reduce the final scene's size.
+
 The scene persists even when every browser closes. Browser reconnects receive the latest full snapshot and automatically reconcile pending local edits. Orbiting, panning, zooming, selecting, and resizing are local observations: they do not save the scene or create revisions. Each viewer keeps their camera as other people edit. Explicit MCP camera/framing tools set the saved render camera and update viewers' framing. Undo/redo is shared by all editors and agents.
 
 ### Initial bounds
 
-- 2 MiB per scene document; 2,000 objects; 64 hierarchy levels.
+- 50 MiB per scene document; 64 MiB per JSON request; 2,000 objects; 64 hierarchy levels.
 - Up to 100 operations per atomic batch and 100 simultaneous viewers per scene.
 - Last 20 edits available in shared undo history.
 - Up to 100 outstanding feedback notes and 64 MiB of feedback images per scene; each screenshot is at most 1 MiB. Resolving notes frees their storage.
@@ -135,6 +137,7 @@ Routes are restricted to `anoma.ly/labs/fiend` and `anoma.ly/labs/fiend/*`. The 
 src/worker.ts       URL routing, assets and public HTTP API
 src/mcp.ts          MCP tools and Cloudflare rendering/export orchestration
 src/room.ts         Durable Object persistence, history, exports and WebSockets
+src/storage.ts      chunked SQLite storage for large documents and exports
 src/scene.ts        constrained operation schemas and scene transformations
 src/access.ts       edit-secret generation and verification
 src/feedback.ts     feedback note/view schemas and pagination contracts
