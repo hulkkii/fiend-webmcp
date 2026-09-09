@@ -1,0 +1,28 @@
+{
+  "name": "@anomalyco/fiend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "dev": "bun run build && wrangler dev --ip 0.0.0.0",
+    "check": "tsc --noEmit",
+    "deploy": "bun run build && wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.4.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "three": "0.186.0",
+    "three-gpu-pathtracer": "0.0.23",
+    "three-mesh-bvh": "0.7.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/bun": "latest",
+    "@types/three": "latest",
+    "typescript": "^5.9.3",
+    "wrangler": "latest"
+  }
+}

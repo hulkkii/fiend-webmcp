@@ -1,0 +1,24 @@
+.landing { max-width: 960px; margin: 0 auto; padding: 0 40px 64px; }
+.introduction { padding: 48px 0 0; }
+.introduction h1 { margin: 0; color: var(--ink); font-size: 22px; line-height: 1.5; font-weight: 400; letter-spacing: -.5px; text-align: center; }
+.mascot { width: 100%; height: clamp(360px, 55vh, 520px); margin: 20px 0 36px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+.mascot canvas { display: block; width: 100%; height: 100%; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 13px; }
+.section-heading h2 { margin: 0; font-size: 13px; font-weight: 400; }
+.section-heading > span { color: var(--muted); font-size: 11px; }
+.section-heading a { color: var(--ink); text-underline-offset: 3px; }
+.section-heading a:hover { color: var(--bright); }
+.endpoint { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border: 1px solid var(--line); background: var(--surface); }
+.endpoint > code { flex: 1; min-width: 0; color: var(--ink); font: 12px/1.7 var(--font); overflow-wrap: anywhere; }
+.endpoint .fiend-button { flex-shrink: 0; }
+
+@media (max-width: 700px) {
+  .landing { padding: 0 20px 40px; }
+  .introduction { padding: 34px 0 0; }
+  .introduction h1 { font-size: 18px; }
+  .mascot { height: clamp(280px, 48vh, 380px); margin: 16px 0 28px; }
+  .section-heading { flex-wrap: wrap; gap: 8px; }
+  .section-heading > span { font-size: 10px; }
+  .endpoint { flex-wrap: wrap; padding: 16px; }
+  .endpoint > code { flex-basis: 100%; }
+}

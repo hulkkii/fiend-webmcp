@@ -1,0 +1,58 @@
+:root {
+  color-scheme: dark;
+  accent-color: #a0a0a0;
+  --bg: #080808;
+  --surface: #111111;
+  --hover: #151515;
+  --ink: #b7b7b7;
+  --bright: #e0e0e0;
+  --muted: #818181;
+  --line: #303030;
+  --subtle: #1b1b1b;
+  --font: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.6 var(--font); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button, a, input { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+a { color: inherit; }
+::selection { background: #383838; color: #fff; }
+:focus-visible { outline: 1px solid var(--bright); outline-offset: 3px; }
+
+.fiend-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 12px/1.5 var(--font);
+  text-decoration: none;
+}
+.fiend-button:hover { color: var(--bright); border-color: #666; background: var(--hover); }
+.fiend-button.primary { border-color: #626262; color: var(--bright); }
+.fiend-button:disabled { color: #606060; cursor: wait; }
+.fiend-brand { display: inline-flex; align-items: center; gap: 12px; color: var(--bright); font: 16px/1 var(--font); text-decoration: none; }
+
+.fiend-dialog {
+  width: min(620px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid #454545;
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.7 var(--font);
+  box-shadow: none;
+}
+.fiend-dialog::backdrop { background: #000b; }
+.fiend-dialog h2 { margin: 0; padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--ink); font: 14px/1.5 var(--font); }
+.fiend-dialog p { margin: 20px 24px; color: var(--muted); }
+.fiend-dialog code { display: block; margin: 20px 24px; padding: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--bright); font: 12px/1.7 var(--font); white-space: pre-wrap; overflow-wrap: anywhere; }
+.fiend-dialog .actions { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--line); }
+.fiend-dialog > .fiend-button { margin: 0 24px 20px; }
+.fiend-toast { position: fixed; bottom: 24px; left: 50%; z-index: 100; transform: translateX(-50%); max-width: calc(100vw - 32px); padding: 12px 20px; border: 1px solid #555; background: var(--surface); color: var(--bright); font: 12px/1.6 var(--font); }
