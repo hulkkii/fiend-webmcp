@@ -33,7 +33,7 @@ menubar.dom.querySelector(".menu")?.remove();
 menubar.dom.querySelector(".menu.right")?.remove();
 const actions = document.createElement("div");
 actions.className = "fiend-menubar-actions";
-actions.innerHTML = `<span id="fiend-status" role="status">Opening</span><button class="fiend-button" id="fiend-save">Save</button><button class="fiend-button" id="fiend-backup">Backup JSON</button><button class="fiend-button" id="fiend-export">Export GLB</button><button class="fiend-button" id="fiend-connect">Agent tools</button>`;
+actions.innerHTML = `<span id="fiend-status" role="status">Opening</span><button class="fiend-button" id="fiend-rename">Rename</button><button class="fiend-button" id="fiend-save">Save</button><button class="fiend-button" id="fiend-backup">Backup JSON</button><button class="fiend-button" id="fiend-export">Export GLB</button><button class="fiend-button" id="fiend-connect">Agent tools</button>`;
 const scenesLink = document.createElement("a");
 scenesLink.id = "fiend-library";
 scenesLink.className = "fiend-scenes-link";
@@ -278,6 +278,12 @@ scenesLink.onclick = (event) => {
   event.preventDefault();
   run(flushNow).then(() => { location.href = scenesLink.href; }).catch((error) => toast(error.message));
 };
+actions.querySelector("#fiend-rename").onclick = () => run(async () => {
+  const name = prompt("Scene name", snapshot.name);
+  if (name === null || name === snapshot.name) return;
+  await flushNow();
+  accepted(await local.rename(snapshot.id, name));
+}).catch((error) => toast(error.message));
 actions.querySelector("#fiend-save").onclick = () => run(flushNow).catch((error) => toast(error.message));
 actions.querySelector("#fiend-backup").onclick = () => exportScene().catch((error) => toast(error.message));
 actions.querySelector("#fiend-export").onclick = () => exportAsset(editor.selected?.uuid ?? "Scene").catch((error) => toast(error.message));
